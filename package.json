@@ -1,0 +1,21 @@
+{
+  "name": "flowtest",
+  "version": "1.0.0",
+  "description": "Visual Markov-Based Website Performance Testing Simulator",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names \"backend,frontend\" --prefix-colors \"cyan,magenta\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:infra": "docker compose up mongo redis -d"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
