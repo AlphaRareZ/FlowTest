@@ -326,8 +326,12 @@ function scheduleArrivals(
 ): EventQueue {
   const queue = new EventQueue();
   const ts = config.timeScale;
-  const anchors = ts?.diurnalPattern ?? DEFAULT_DIURNAL;
-  const bursts = ts?.bursts;
+
+  // Diurnal / burst shaping only applies when time-compression is active (factor > 1).
+  // With factor <= 1, arrivals use the raw timeBetweenArrivals directly.
+  const useDiurnal = ts != null && ts.factor > 1;
+  const anchors = useDiurnal ? (ts.diurnalPattern ?? DEFAULT_DIURNAL) : [];
+  const bursts  = useDiurnal ? ts.bursts : undefined;
 
   let virtualCursor = 0;
   let userId = 0;
@@ -335,14 +339,22 @@ function scheduleArrivals(
   while (virtualCursor < virtualDurationMs && userId < config.numberOfUsers) {
     queue.push({ virtualTimeMs: virtualCursor, type: "USER_ARRIVAL", userId });
 
-    const diurnalM = interpolateMultiplier(anchors, (virtualCursor / 3_600_000) % 24);
-    const burstM   = burstContribution(bursts, virtualCursor);
-    const totalM   = Math.max(0.01, diurnalM + burstM);
-    const baseVirtualGap = config.timeBetweenArrivals / totalM;
+    let virtualGap: number;
 
-    const virtualGap = config.arrivalMode === "poisson"
-      ? sampleExponential(baseVirtualGap)
-      : baseVirtualGap;
+    if (useDiurnal) {
+      const diurnalM = interpolateMultiplier(anchors, (virtualCursor / 3_600_000) % 24);
+      const burstM   = burstContribution(bursts, virtualCursor);
+      const totalM   = Math.max(0.01, diurnalM + burstM);
+      const baseVirtualGap = config.timeBetweenArrivals / totalM;
+
+      virtualGap = config.arrivalMode === "poisson"
+        ? sampleExponential(baseVirtualGap)
+        : baseVirtualGap;
+    } else {
+      virtualGap = config.arrivalMode === "poisson"
+        ? sampleExponential(config.timeBetweenArrivals)
+        : config.timeBetweenArrivals;
+    }
 
     virtualCursor += virtualGap;
     userId++;
