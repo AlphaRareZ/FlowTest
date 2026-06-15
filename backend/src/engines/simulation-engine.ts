@@ -364,13 +364,11 @@ function scheduleArrivals(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Single user session
+// Single user session — each session is a concurrent "thread"
 //
-// FIX #1: steps++ now only fires when an actual page request is made, so
-//         start/end node traversals don't silently consume session budget.
-//
-// FIX #2: The end-node early-exit now breaks BEFORE assigning nextId to
-//         currentNodeId, so end nodes are never entered and the break is live.
+// The semaphore limits concurrent in-flight HTTP requests across ALL sessions,
+// not the number of active sessions. This lets all users navigate the graph
+// simultaneously while protecting the target server from being overwhelmed.
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function runSession(
@@ -379,12 +377,12 @@ async function runSession(
   startNodeId: string,
   config: SimulationConfig,
   clock: VirtualClock,
-  token: CancellationToken
+  token: CancellationToken,
+  semaphore: Semaphore,
+  realEndTime: number
 ): Promise<RequestResult[]> {
   const profile = resolveProfile(config);
   const timeScaleFactor = config.timeScale?.factor ?? 1;
-
-  // FIX #4: pass only maxSteps; the function no longer takes a separate meanSteps.
   const sessionLength = sampleSessionLength(profile.maxStepsPerSession);
 
   const localResults: RequestResult[] = [];
@@ -394,21 +392,29 @@ async function runSession(
   while (
     currentNodeId !== null &&
     steps < sessionLength &&
-    !token.cancelled
+    !token.cancelled &&
+    Date.now() < realEndTime
   ) {
     const node = nodeMap.get(currentNodeId);
     if (!node) break;
 
     if (node.nodeType === "page") {
-      const result = await executeRequest(node);
+      // Gate concurrent HTTP requests through the semaphore
+      await semaphore.acquire();
+      if (token.cancelled || Date.now() >= realEndTime) {
+        semaphore.release();
+        break;
+      }
 
-      // Stamp with virtual (simulated) time, not a wall-clock epoch.
+      const result = await executeRequest(node);
+      semaphore.release();
+
+      // Stamp with virtual (simulated) time
       result.timestamp = clock.virtualElapsedMs;
       localResults.push(result);
-
-      // FIX #1: only count a step when a real request was issued.
       steps++;
 
+      // Think time between page visits (simulates real user reading time)
       const realThinkMs = sampleThinkTime(profile.thinkTime, timeScaleFactor);
       if (realThinkMs > 0 && !token.cancelled) {
         await sleep(realThinkMs);
@@ -419,8 +425,6 @@ async function runSession(
     if (transitions.length === 0) break;
 
     const nextId = selectNextNode(transitions, profile.exitProbability);
-
-    // FIX #2: bail out BEFORE assigning nextId so end nodes are never entered.
     if (nextId === null) break;
     const nextNode = nodeMap.get(nextId);
     if (nextNode?.nodeType === "end") break;
@@ -612,6 +616,15 @@ export interface SimulationHandle {
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Main runner
+//
+// Two modes:
+//   factor <= 1  →  "Thread-per-user" mode: all users launch immediately as
+//                   concurrent coroutines.  The semaphore gates HTTP requests,
+//                   not sessions.  This mimics real concurrent browser users.
+//
+//   factor > 1   →  "Compressed-time" mode: users arrive according to the
+//                   diurnal event queue (time-scaled).  Still uses per-request
+//                   semaphore for HTTP concurrency.
 // ═════════════════════════════════════════════════════════════════════════════
 
 export function runSimulation(
@@ -637,42 +650,59 @@ export function runSimulation(
   const virtualDurationMs = config.timeScale?.virtualDurationMs ?? config.simulationDuration;
   const realEndTime = Date.now() + config.simulationDuration;
 
+  /** Helper: wrap a session into a tracked promise. */
+  function launchSession(): Promise<void> {
+    return runSession(
+      nodeMap, adjacency, startNode.id, config, clock, token, semaphore, realEndTime
+    ).then((batch) => {
+      metricsBuffer.flush(batch);
+      if (onProgress) {
+        onProgress(Math.min(1, clock.realElapsedMs / config.simulationDuration));
+      }
+    });
+  }
+
   async function _run(): Promise<SimulationSummary> {
     const sessionPromises: Promise<void>[] = [];
-    const eventQueue = scheduleArrivals(config, virtualDurationMs);
 
-    while (eventQueue.size > 0 && !token.cancelled) {
-      const event = eventQueue.pop()!;
+    if (timeScaleFactor > 1) {
+      // ── Compressed-time mode: dispatch users via diurnal event queue ────
+      const eventQueue = scheduleArrivals(config, virtualDurationMs);
 
-      if (Date.now() >= realEndTime) break;
+      while (eventQueue.size > 0 && !token.cancelled) {
+        const event = eventQueue.pop()!;
+        if (Date.now() >= realEndTime) break;
 
-      const virtualNow = clock.virtualElapsedMs;
-      const virtualWait = Math.max(0, event.virtualTimeMs - virtualNow);
-      const realWait = timeScaleFactor > 1 ? virtualWait / timeScaleFactor : virtualWait;
-      if (realWait > 0 && !token.cancelled) {
-        await sleep(Math.min(realWait, realEndTime - Date.now()));
-      }
-
-      if (token.cancelled || Date.now() >= realEndTime) break;
-
-      await semaphore.acquire();
-      if (token.cancelled) { semaphore.release(); break; }
-
-      const sessionPromise = runSession(
-        nodeMap, adjacency, startNode.id, config, clock, token
-      ).then((batch) => {
-        metricsBuffer.flush(batch);
-        if (onProgress) {
-          onProgress(Math.min(1, clock.realElapsedMs / config.simulationDuration));
+        const virtualNow = clock.virtualElapsedMs;
+        const virtualWait = Math.max(0, event.virtualTimeMs - virtualNow);
+        const realWait = virtualWait / timeScaleFactor;
+        if (realWait > 0 && !token.cancelled) {
+          await sleep(Math.min(realWait, Math.max(0, realEndTime - Date.now())));
         }
-      }).finally(() => {
-        semaphore.release();
-      });
+        if (token.cancelled || Date.now() >= realEndTime) break;
 
-      sessionPromises.push(sessionPromise);
+        sessionPromises.push(launchSession());
+      }
+    } else {
+      // ── Thread-per-user mode: launch ALL users as concurrent coroutines ─
+      // Every user is an independent "thread" navigating the graph freely.
+      // The semaphore inside runSession limits concurrent HTTP requests.
+      for (let i = 0; i < config.numberOfUsers; i++) {
+        if (token.cancelled || Date.now() >= realEndTime) break;
+        sessionPromises.push(launchSession());
+      }
     }
 
-    await Promise.allSettled(sessionPromises);
+    // Enforce hard wall-clock deadline
+    const deadlineGuard = sleep(Math.max(0, realEndTime - Date.now())).then(() => {
+      token.cancelled = true;
+    });
+
+    await Promise.race([
+      Promise.allSettled(sessionPromises),
+      deadlineGuard,
+    ]);
+
     return aggregateResults(nodeMap, metricsBuffer.results, config, clock);
   }
 
