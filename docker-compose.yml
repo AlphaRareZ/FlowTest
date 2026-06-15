@@ -1,4 +1,10 @@
-version: "3.9"
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  FlowTest – Docker Compose (Production)                                    ║
+# ║                                                                            ║
+# ║  Usage:                                                                    ║
+# ║    1. Copy .env.example → .env and fill in your values                     ║
+# ║    2. docker compose up -d --build                                         ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 services:
   # ── Infrastructure ──────────────────────────────────────────────────────────
@@ -6,8 +12,6 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
       - mongo_data:/data/db
     environment:
@@ -17,12 +21,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - internal
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -30,8 +34,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - internal
 
-  # ── Backend ─────────────────────────────────────────────────────────────────
+  # ── Backend API ─────────────────────────────────────────────────────────────
 
   backend:
     build:
@@ -39,36 +45,49 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "${BACKEND_PORT:-3001}:3001"
     environment:
       PORT: 3001
       NODE_ENV: production
       MONGODB_URI: mongodb://mongo:27017/flowtest
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      CORS_ORIGINS: http://localhost:3000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      MAX_CONCURRENT_USERS: ${MAX_CONCURRENT_USERS:-1000}
+      HTTP_REQUEST_TIMEOUT_MS: ${HTTP_REQUEST_TIMEOUT_MS:-10000}
+      MAX_RETRIES: ${MAX_RETRIES:-2}
     depends_on:
       mongo:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - internal
 
-  # ── Frontend ─────────────────────────────────────────────────────────────────
+  # ── Frontend (Next.js) ─────────────────────────────────────────────────────
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://76.13.15.132:3001/api
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api}
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: http://76.13.15.132:3001/api
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       - backend
+    networks:
+      - internal
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
 
 volumes:
   mongo_data:
   redis_data:
+
+# ── Networks ───────────────────────────────────────────────────────────────────
+
+networks:
+  internal:
+    driver: bridge

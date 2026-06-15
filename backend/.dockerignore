@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+*.log
+.git
+.vscode
+.DS_Store
+README.md
+docker-compose.yml
