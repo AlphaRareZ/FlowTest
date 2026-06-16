@@ -1,0 +1,2 @@
+// this txt file is only made to make sure that docker file runs perfectly 
+// >>> COPY --from=builder /app/public ./public
