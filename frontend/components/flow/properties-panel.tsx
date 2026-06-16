@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { X, Globe, Play, Square, Link2, Trash2 } from "lucide-react";
 import { useFlowStore } from "@/lib/store";
 import { Input } from "@/components/ui/input";
@@ -34,6 +35,21 @@ export function PropertiesPanel() {
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId);
+
+  // Local state for headers text so user can freely type/delete
+  const [headersText, setHeadersText] = useState("");
+  const [headersError, setHeadersError] = useState(false);
+
+  // Sync local state when selected node changes
+  useEffect(() => {
+    if (selectedNode?.data.headers) {
+      setHeadersText(JSON.stringify(selectedNode.data.headers, null, 2));
+      setHeadersError(false);
+    } else {
+      setHeadersText("");
+      setHeadersError(false);
+    }
+  }, [selectedNodeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!isPropertiesPanelOpen || (!selectedNode && !selectedEdge)) {
     return null;
@@ -143,26 +159,37 @@ export function PropertiesPanel() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="node-headers" className="text-xs text-muted-foreground">
-                    Headers (JSON)
-                  </Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="node-headers" className="text-xs text-muted-foreground">
+                      Headers (JSON)
+                    </Label>
+                    {headersError && (
+                      <span className="text-[10px] text-destructive">Invalid JSON</span>
+                    )}
+                  </div>
                   <Textarea
                     id="node-headers"
-                    value={
-                      selectedNode.data.headers
-                        ? JSON.stringify(selectedNode.data.headers, null, 2)
-                        : ""
-                    }
+                    value={headersText}
                     onChange={(e) => {
+                      const raw = e.target.value;
+                      setHeadersText(raw);
+                      if (raw.trim() === "") {
+                        updateNodeData(selectedNode.id, { headers: undefined });
+                        setHeadersError(false);
+                        return;
+                      }
                       try {
-                        const headers = JSON.parse(e.target.value);
+                        const headers = JSON.parse(raw);
                         updateNodeData(selectedNode.id, { headers });
+                        setHeadersError(false);
                       } catch {
-                        // Invalid JSON, ignore
+                        setHeadersError(true);
                       }
                     }}
                     placeholder='{"Authorization": "Bearer token"}'
-                    className="bg-input font-mono text-xs min-h-[80px]"
+                    className={`bg-input font-mono text-xs min-h-[80px] max-h-[200px] overflow-y-auto resize-y ${
+                      headersError ? "border-destructive focus-visible:ring-destructive" : ""
+                    }`}
                   />
                 </div>
 

@@ -130,7 +130,7 @@ export function TopBar() {
               value={jsonData}
               onChange={(e) => setJsonData(e.target.value)}
               placeholder='{"nodes": [...], "edges": [...]}'
-              className="min-h-[200px] font-mono text-sm"
+              className="min-h-[200px] max-h-[50vh] overflow-y-auto font-mono text-sm"
             />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setIsLoadDialogOpen(false)}>
@@ -158,7 +158,7 @@ export function TopBar() {
             <Textarea
               value={jsonData}
               readOnly
-              className="min-h-[200px] font-mono text-sm"
+              className="min-h-[200px] max-h-[50vh] overflow-y-auto font-mono text-sm"
             />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setIsSaveDialogOpen(false)}>
