@@ -41,7 +41,7 @@ export function validateGraph(graph: GraphData): ValidationError[] {
   if (startNodes.length > 1) {
     errors.push({
       message: `Flow has ${startNodes.length} Start nodes — only one is allowed`,
-      type: "warning",
+      type: "error",
     });
   }
 

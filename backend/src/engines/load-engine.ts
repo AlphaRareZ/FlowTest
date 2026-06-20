@@ -54,6 +54,7 @@ export async function executeRequest(
 
   let attempt = 0;
   let lastError: unknown;
+  let lastResponseTime = 0;
 
   while (attempt <= MAX_RETRIES) {
     if (signal?.aborted) {
@@ -87,11 +88,12 @@ export async function executeRequest(
       return { nodeId, statusCode: response.status, responseTime, success, timestamp: 0 };
 
     } catch (err) {
+      const currentResponseTime = Math.round(performance.now() - start);
       if (axios.isCancel(err)) {
         return {
           nodeId,
           statusCode: 0,
-          responseTime: Math.round(performance.now() - start),
+          responseTime: currentResponseTime,
           success: false,
           error: "CANCELLED",
           timestamp: 0,   // caller stamps virtual time
@@ -102,7 +104,7 @@ export async function executeRequest(
         return {
           nodeId,
           statusCode: 0,
-          responseTime: Math.round(performance.now() - start),
+          responseTime: currentResponseTime,
           success: false,
           error: String(err),
           timestamp: 0,   // caller stamps virtual time
@@ -110,6 +112,7 @@ export async function executeRequest(
       }
 
       lastError = err;
+      lastResponseTime = currentResponseTime;
       attempt++;
 
       if (attempt > MAX_RETRIES) break;
@@ -125,5 +128,5 @@ export async function executeRequest(
       ? `${lastError.code ?? "NETWORK_ERROR"}: ${lastError.message}`
       : String(lastError);
 
-  return { nodeId, statusCode: 0, responseTime: 0, success: false, error, timestamp: 0 };
+  return { nodeId, statusCode: 0, responseTime: lastResponseTime, success: false, error, timestamp: 0 };
 }

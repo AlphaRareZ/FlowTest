@@ -98,31 +98,7 @@ function burstContribution(bursts: TrafficBurst[] | undefined, virtualElapsedMs:
   return extra;
 }
 
-function getEffectiveInterArrivalMs(
-  baseInterArrivalMs: number,
-  config: SimulationConfig,
-  virtualElapsedMs: number
-): number {
-  const ts = config.timeScale;
-  if (!ts || ts.factor <= 1) {
-    return config.arrivalMode === "poisson"
-      ? sampleExponential(baseInterArrivalMs)
-      : baseInterArrivalMs;
-  }
-
-  const anchors = ts.diurnalPattern ?? DEFAULT_DIURNAL;
-  const fractionalHour = (virtualElapsedMs / 3_600_000) % 24;
-  const diurnalMultiplier = interpolateMultiplier(anchors, fractionalHour);
-  const burstMult = burstContribution(ts.bursts, virtualElapsedMs);
-  const totalMultiplier = Math.max(0.01, diurnalMultiplier + burstMult);
-
-  const virtualInterArrival = baseInterArrivalMs / totalMultiplier;
-  const realInterArrival = virtualInterArrival / ts.factor;
-
-  return config.arrivalMode === "poisson"
-    ? sampleExponential(realInterArrival)
-    : realInterArrival;
-}
+// Removed getEffectiveInterArrivalMs dead code
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Poisson sampling
@@ -224,7 +200,8 @@ function sampleSessionLength(maxSteps: number): number {
   // Geometric(p) where p = 1 / maxSteps → expected value = maxSteps steps.
   const p = 1 / Math.max(maxSteps, 1);
   let steps = 0;
-  while (steps < maxSteps) {
+  const hardCap = maxSteps * 3; // Cap at 3x the mean to preserve expected value
+  while (steps < hardCap) {
     steps++;
     if (Math.random() < p) break;
   }
@@ -538,7 +515,7 @@ function aggregateResults(
 
   // ── Time series ────────────────────────────────────────────────────────────
   const bucketSizeMs = timeScaleFactor > 1 ? 60_000 : 1_000;
-  const totalBuckets = Math.ceil(virtualDuration / bucketSizeMs);
+  const targetBuckets = Math.ceil(virtualDuration / bucketSizeMs);
   const buckets = new Map<number, { responseTimes: number[]; count: number }>();
 
   for (const r of rawResults) {
@@ -548,6 +525,9 @@ function aggregateResults(
     b.responseTimes.push(r.responseTime);
     b.count++;
   }
+
+  const maxBucketFromData = buckets.size > 0 ? Math.max(...Array.from(buckets.keys())) : -1;
+  const totalBuckets = Math.max(targetBuckets, maxBucketFromData + 1);
 
   const timeSeriesData: TimeSeriesPoint[] = [];
   let peakRps = 0;
@@ -690,6 +670,14 @@ export function runSimulation(
       for (let i = 0; i < config.numberOfUsers; i++) {
         if (token.cancelled || Date.now() >= realEndTime) break;
         sessionPromises.push(launchSession());
+
+        // Fix: Space out initial user arrivals rather than thundering herd
+        if (i < config.numberOfUsers - 1 && !token.cancelled) {
+          const gap = config.arrivalMode === "poisson"
+            ? sampleExponential(config.timeBetweenArrivals)
+            : config.timeBetweenArrivals;
+          await sleep(Math.min(gap, Math.max(0, realEndTime - Date.now())));
+        }
       }
     }
 
